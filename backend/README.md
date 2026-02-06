@@ -1,163 +1,198 @@
-# Chat App Backend API
+# RealChat Backend
 
-Express.js ilə yazılmış Chat Uygulaması Backend API-si.
+Express.js + Socket.io + JWT Auth + SQLite ilə yazılmış Real-time Chat Application Backend-i.
+
+## Xüsusiyyətlər
+
+✅ **User Authentication**
+- OTP-based registration (email verification)
+- JWT-based login (access + refresh tokens)
+- Secure password hashing (bcryptjs)
+- HTTP-only cookies
+
+✅ **Real-time Chat**
+- Socket.io integration
+- Multi-room support
+- Message history (50 last messages)
+- User presence tracking
+- Typing indicators
+- Message read status
+
+✅ **Security**
+- CORS configuration
+- Access token (15 min) + Refresh token (7 days)
+- Password validation
+- Email normalization
+- CSRF protection
 
 ## Quraşdırma
 
-### Yerli Ortamda (Local)
+### Lokal Olaraq
 
 ```bash
 # Dependencies quraşdır
 npm install
 
-# .env faylı yarat
+# .env faylı yarat (.env.example-dən)
 cp .env.example .env
 
-# Development mode-da başlat
-npm run dev
-
-# Production-da başlat
+# Development server başlat
 npm start
 ```
 
-Server http://localhost:5000 adresində işləyəcəkdir.
+Server http://localhost:3001 ünvanında başlayacaq.
+
+### Environment Variables
+
+`.env` faylında aşağıdakılar lazımdır:
+
+```env
+PORT=3001
+NODE_ENV=development
+FRONTEND_ORIGIN=http://localhost:5173
+
+ACCESS_SECRET=your_secret_key
+REFRESH_SECRET=your_secret_key
+
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=your-email@gmail.com
+SMTP_PASS=your-app-password
+SMTP_FROM=noreply@realchat.com
+```
 
 ## API Endpoints
 
-### Health Check
-```
-GET /api/health
-```
-Server statusunu yoxlayır.
+### Authentication
 
-**Cavab:**
-```json
-{
-  "status": "ok",
-  "message": "Server is running",
-  "timestamp": "2024-01-15T10:30:00.000Z"
-}
-```
+**POST /api/register/request-otp**
+- Email-ə OTP göndər
+- Body: `{ email, username, password }`
 
-### Mesajlar Almaq
-```
-GET /api/messages
-```
-Bütün mesajları qaytarır.
+**POST /api/register/verify-otp**
+- OTP doğrula və istifadəçi yarat
+- Body: `{ email, code }`
+- Returns: User data + auth cookies
 
-**Cavab:**
-```json
-[
-  {
-    "id": 1,
-    "username": "Ali",
-    "message": "Salam!",
-    "timestamp": "2024-01-15T10:30:00.000Z",
-    "avatar": "https://api.dicebear.com/7.x/avataaars/svg?seed=Ali"
-  }
-]
-```
+**POST /api/login**
+- Email/username ilə daxil ol
+- Body: `{ identifier, password }`
 
-### Yeni Mesaj Göndərmək
-```
-POST /api/messages
+**POST /api/logout**
+- Cookies silinir
+
+**POST /api/logout-all**
+- Bütün cihazlardan çıx
+
+**GET /api/me**
+- Cari istifadəçi məlumatı
+
+**POST /api/refresh**
+- Token refresh
+
+### WebSocket (Socket.io)
+
+**auth:join** - Otaqaya qoşul
+```javascript
+socket.emit('auth:join', { room: 'general' });
+socket.on('room:history', messages => {});
+socket.on('room:joined', { room, users } => {});
 ```
 
-**Request Body:**
-```json
-{
-  "username": "Ali",
-  "message": "Salam hamı!"
-}
+**message:send** - Mesaj göndər
+```javascript
+socket.emit('message:send', { room, text, clientId });
+socket.on('message:delivered', { clientId, messageId } => {});
+socket.on('message:new', message => {});
 ```
 
-**Cavab:**
-```json
-{
-  "id": 1705320600000,
-  "username": "Ali",
-  "message": "Salam hamı!",
-  "timestamp": "2024-01-15T10:30:00.000Z",
-  "avatar": "https://api.dicebear.com/7.x/avataaars/svg?seed=Ali"
-}
+**typing** - Typing göstəri
+```javascript
+socket.emit('typing', { room, isTyping });
+socket.on('typing', { username, isTyping } => {});
 ```
 
-### İstifadəçilər Almaq
-```
-GET /api/users
-```
+Bütün endpoints haqda: **[API_DOCS.md](./API_DOCS.md)**
 
-**Cavab:**
-```json
-[
-  {
-    "id": 1,
-    "username": "Ali",
-    "email": "ali@example.com",
-    "status": "online",
-    "avatar": "https://api.dicebear.com/7.x/avataaars/svg?seed=Ali"
-  }
-]
-```
+## Database
 
-### Otaqlar Almaq
-```
-GET /api/rooms
-```
+SQLite istifadə edilir (`data.sqlite`):
 
-**Cavab:**
-```json
-[
-  {
-    "id": 1,
-    "name": "General",
-    "description": "Ümumi söhbətləri üçün",
-    "members": 24,
-    "createdAt": "2024-01-15T10:30:00.000Z"
-  }
-]
-```
+- **users** - İstifadəçi məlumatları
+- **messages** - Chat mesajları
+- **refresh_tokens** - Token management
+- **otp_codes** - OTP verification
 
-## Render.com-da Deploy
+## Deployment
 
-### 1. GitHub-a Push Et
+### Render.com-a Deploy
+
+1. GitHub-ə push et
+2. Render New Web Service
+3. Root Directory: `backend`
+4. Build: `npm install`
+5. Start: `npm start`
+6. Environment variables əlavə et
+
+**[DEPLOYMENT.md](./DEPLOYMENT.md)** faylında detallı bələdçi.
+
+## Development
 
 ```bash
-git add .
-git commit -m "Backend setup for Render deployment"
-git push origin main
+# Dev mode (nodemon)
+npm run dev
+
+# Test server
+curl http://localhost:3001/health
+
+# Logs izlə
+DEBUG=* npm start
 ```
 
-### 2. Render.com-da Deploy Et
+## Frontend Integration
 
-1. [Render.com](https://render.com) saytına daxil ol
-2. **New** → **Web Service** seç
-3. GitHub repo-nu seç
-4. Parametrlər:
-   - **Name:** `chat-app-backend` (və ya istədiyin ad)
-   - **Environment:** `Node`
-   - **Build Command:** `npm install`
-   - **Start Command:** `npm start`
-5. **Advanced** → Environment variables əlavə et:
-   - `NODE_ENV=production`
-   - `PORT=5000` (Render avtomatik əlavə edir)
-6. **Create Web Service** yə basaraq deploy et
+Frontend-də:
 
-### 3. Environment Variables
-
-Render dashboard-da əlavə et:
-```
-NODE_ENV=production
-API_URL=https://your-app-name.onrender.com
+```env
+NEXT_PUBLIC_API_URL=https://your-backend-url
+NEXT_PUBLIC_SOCKET_URL=https://your-backend-url
 ```
 
-## Qeydlər
+```javascript
+// API call
+fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/login`, {
+  method: 'POST',
+  credentials: 'include',  // important!
+  body: JSON.stringify(...)
+});
 
-- Server avtomatik PORT dəyişəninə başlayır (Render üçün vacibdir)
-- CORS bütün origin-lərdən sorğulara icazə verir
-- Error handling və 404 handler tətbiq edilmişdir
-- Development-da `nodemon` istifadə et, production-da `node` istifadə olunur
+// Socket connection
+import io from 'socket.io-client';
+const socket = io(process.env.NEXT_PUBLIC_SOCKET_URL);
+```
 
-## Lisenziya
+## Struktur
+
+```
+backend/
+├── index.js          # Main server file
+├── db.js             # SQLite database layer
+├── mail.js           # Email configuration
+├── package.json      # Dependencies
+├── Procfile          # Render deployment
+├── .env.example      # Environment template
+├── API_DOCS.md       # API documentation
+└── DEPLOYMENT.md     # Deployment guide
+```
+
+## Notes
+
+- SQLite local file-based. Production-da PostgreSQL istifadə edin.
+- Free Tier Render-də 15 min inactivity sonra cold start.
+- Email göndərmə üçün Gmail App Password lazımdır.
+- Refresh token 7 gün, access token 15 dəqiqə valid.
+
+## License
 
 MIT
