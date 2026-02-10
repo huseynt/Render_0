@@ -1,3 +1,4 @@
+const axios = require("axios");
 require("dotenv").config();
 const nodemailer = require("nodemailer");
 const dns = require("dns");
@@ -22,22 +23,33 @@ transporter
   .catch((e) => console.log("❌ SMTP error:", e?.message || e));
 
 async function sendOtpEmail(toEmail, otp) {
-  const info = await transporter.sendMail({
-    from: process.env.SMTP_FROM,
-    to: toEmail,
-    subject: "OTP Code — RealChat",
-    text: `Your OTP code is: ${otp}. This code expires in 5 minutes.`,
-    html: `
-      <div style="font-family:Arial,sans-serif">
-        <h2>RealChat OTP Code</h2>
-        <p>Your verification code:</p>
-        <h1 style="letter-spacing:6px">${otp}</h1>
-        <p>This code expires in 5 minutes.</p>
-      </div>
-    `,
-  });
+  await axios.post(
+    "https://api.brevo.com/v3/smtp/email",
+    {
+      sender: {
+        name: "RealChat",
+        email: process.env.SMTP_FROM.match(/<(.*)>/)[1],
+      },
+      to: [{ email: toEmail }],
+      subject: "OTP Code — RealChat",
+      htmlContent: `
+        <div style="font-family:Arial">
+          <h2>RealChat OTP Code</h2>
+          <h1>${otp}</h1>
+          <p>This code expires in 5 minutes.</p>
+        </div>
+      `,
+    },
+    {
+      headers: {
+        "api-key": process.env.BREVO_API_KEY,
+        "Content-Type": "application/json",
+      },
+      timeout: 10000,
+    }
+  );
 
-  console.log("✅ OTP email göndərildi:", toEmail, "messageId:", info.messageId);
+  console.log("✅ OTP email göndərildi:", toEmail);
 }
 
 module.exports = { sendOtpEmail };
