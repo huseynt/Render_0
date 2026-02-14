@@ -26,6 +26,25 @@ const {
   addMessage,
   getRecentMessages,
 
+  createRoom,
+  getRoomById,
+  deleteRoom,
+  deleteOldRooms,
+
+  createInvite,
+  getInviteByToken,
+  incrementInviteUsage,
+  deleteExpiredInvites,
+
+  addMessageEnhanced,
+  getMessageWithReplies,
+  editMessage,
+  deleteMessageForUser,
+  deleteMessageForAll,
+
+  upsertMessageStatus,
+  getMessageStatus,
+
   upsertOtp,
   getOtp,
   deleteOtp,
@@ -343,6 +362,103 @@ app.get("/api/me", optionalAuth, (req, res) => {
   });
 });
 
+// ROOM ENDPOINTS
+app.post("/api/rooms/create", requireAuth, (req, res) => {
+  const name = String(req.body?.name || "").trim();
+  if (!name || name.length < 3) {
+    return res.status(400).json({ message: "Room name min 3 simvol" });
+  }
+
+  const roomId = randomUUID();
+  try {
+    createRoom({ id: roomId, name, creatorId: req.user.sub });
+    return res.json({ id: roomId, name });
+  } catch (e) {
+    if (e.message.includes("UNIQUE")) {
+      return res.status(409).json({ message: "Bu room adı artıq var" });
+    }
+    return res.status(500).json({ message: "Room yaratma xətası" });
+  }
+});
+
+app.delete("/api/rooms/:roomId", requireAuth, (req, res) => {
+  const roomId = String(req.params.roomId || "");
+  const room = getRoomById(roomId);
+
+  if (!room) return res.status(404).json({ message: "Room tapılmadı" });
+  if (room.creatorId !== req.user.sub) {
+    return res.status(403).json({ message: "Yalnız creator room silə biləri" });
+  }
+
+  deleteRoom(roomId);
+  return res.json({ ok: true });
+});
+
+// INVITE ENDPOINTS
+app.post("/api/invites/create", requireAuth, (req, res) => {
+  const roomId = String(req.body?.roomId || "").trim();
+  const expirationDays = req.body?.expirationDays || null;
+
+  const room = getRoomById(roomId);
+  if (!room) return res.status(404).json({ message: "Room tapılmadı" });
+  if (room.creatorId !== req.user.sub) {
+    return res.status(403).json({ message: "Yalnız creator invite yarada biləri" });
+  }
+
+  const inviteId = randomUUID();
+  const inviteToken = randomUUID().replace(/-/g, "").substring(0, 16).toUpperCase();
+  const expiresAt = expirationDays ? Date.now() + expirationDays * 24 * 60 * 60 * 1000 : null;
+
+  try {
+    createInvite({
+      id: inviteId,
+      roomId,
+      inviteToken,
+      createdBy: req.user.sub,
+      expiresAt,
+    });
+    return res.json({ inviteToken, expiresAt, roomId });
+  } catch (e) {
+    return res.status(500).json({ message: "Invite yaratma xətası" });
+  }
+});
+
+app.post("/api/invites/resolve", requireAuth, (req, res) => {
+  const inviteToken = String(req.body?.inviteToken || "").trim();
+  if (!inviteToken) {
+    return res.status(400).json({ message: "Invite token tələb olunur" });
+  }
+
+  try {
+    deleteExpiredInvites();
+  } catch {}
+
+  const invite = getInviteByToken(inviteToken);
+  if (!invite) {
+    return res.status(404).json({ message: "Invite tapılmadı və ya vaxtı bitib" });
+  }
+
+  const room = getRoomById(invite.roomId);
+  if (!room || room.deletedAt) {
+    return res.status(404).json({ message: "Room tapılmadı" });
+  }
+
+  incrementInviteUsage(invite.id);
+  return res.json({ room: { id: room.id, name: room.name } });
+});
+
+// CLEANUP ENDPOINTS (periodic tasks)
+app.post("/api/cleanup/old-rooms", (req, res) => {
+  const sixMonthsAgo = Date.now() - 6 * 30 * 24 * 60 * 60 * 1000;
+  try {
+    deleteOldRooms(sixMonthsAgo);
+    deleteExpiredInvites();
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ message: "Cleanup xətası" });
+  }
+});
+
 const io = new Server(server, {
   cors: {
     origin: FRONTEND_ORIGIN,
@@ -417,7 +533,7 @@ io.on("connection", (socket) => {
     emitUsers(r);
   });
 
-  socket.on("message:send", ({ room, text, clientId }) => {
+  socket.on("message:send", ({ room, text, clientId, replyToId }) => {
     const r = String(room || socket.data.room || "general").trim() || "general";
     const t = String(text || "").trim();
     if (!t) return;
@@ -425,23 +541,63 @@ io.on("connection", (socket) => {
     const msg = {
       id: randomUUID(),
       room: r,
+      userId: socket.user.id,
       clientId: clientId ? String(clientId) : null,
       username: socket.user.username,
       text: t,
       system: false,
       createdAt: Date.now(),
+      replyToId: replyToId ? String(replyToId) : null,
     };
 
-    addMessage(msg);
-    io.to(r).emit("message:new", msg);
-
+    addMessageEnhanced(msg);
+    
+    const fullMsg = getMessageWithReplies(msg.id);
+    io.to(r).emit("message:new", fullMsg);
     socket.emit("message:delivered", { clientId: msg.clientId, messageId: msg.id });
+  });
+
+  socket.on("message:edit", ({ messageId, newText }) => {
+    if (!messageId || !newText) return;
+
+    const msg = getMessageWithReplies(messageId);
+    if (!msg || msg.userId !== socket.user.id) return;
+
+    editMessage(messageId, newText);
+    const updatedMsg = getMessageWithReplies(messageId);
+    io.to(msg.room).emit("message:edited", updatedMsg);
+  });
+
+  socket.on("message:delete", ({ messageId, deleteForAll }) => {
+    if (!messageId) return;
+
+    const msg = getMessageWithReplies(messageId);
+    if (!msg || (msg.userId !== socket.user.id && !deleteForAll)) return;
+
+    if (deleteForAll) {
+      deleteMessageForAll(messageId);
+      io.to(msg.room).emit("message:deleted-all", { messageId });
+    } else {
+      deleteMessageForUser(messageId, socket.user.id);
+      socket.emit("message:deleted-me", { messageId });
+    }
+  });
+
+  socket.on("message:status", ({ messageId, status }) => {
+    if (!messageId || !status) return;
+
+    upsertMessageStatus(messageId, socket.user.id, status);
+    const statuses = getMessageStatus(messageId);
+    io.emit("message:status-update", { messageId, statuses });
   });
 
   socket.on("message:read", ({ room, readUpTo }) => {
     const r = String(room || socket.data.room || "general").trim() || "general";
     if (!readUpTo) return;
-    socket.to(r).emit("message:seen", { readUpTo });
+    
+    upsertMessageStatus(readUpTo, socket.user.id, "seen");
+    const statuses = getMessageStatus(readUpTo);
+    socket.to(r).emit("message:seen", { readUpTo, statuses });
   });
 
   socket.on("typing", ({ room, isTyping }) => {
